@@ -109,18 +109,21 @@ class AffinityGraph():
   '''
   def __init__(self, x):
     self.W = torch.zeros(x.shape[0], x.shape[1], x.shape[1])
+    self.M = torch.zeros(x.shape[0])
     bsz = x.shape[0]
     for i in range(bsz):
       A = cosine_similarity(x[i])
-      A = torch.maximum(A, torch.tensor(0, dtype=torch.float32))
+      # A = torch.maximum(A, torch.tensor(0, dtype=torch.float32))
+      x = torch.clamp(x, min=0)
       K = torch.sum(A, dim=1)
       m = A.sum()
       k = K @ K.T
       W = k * A / m
       self.W[i] = W
+      self.M[i] = m
   
   def GetGraph(self):
-    return self.W
+    return self.W, self.M
 
 
 
