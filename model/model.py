@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from base import BaseModel
 from transformers import ViTImageProcessor, ViTModel
+from utils import cosine_similarity
 
 class ViT():
   def __init__(self):
@@ -101,3 +102,26 @@ class ACG(BaseModel):
     for layer in self.layers:
       outputs = layer(outputs, representation)
     return outputs
+  
+class AffinityGraph():
+  '''
+  @ param x: representation of the pixels with shape(Batch, tokens, d_model)
+  '''
+  def __init__(self, x):
+    self.W = torch.zeros(x.shape[0], x.shape[1], x.shape[1])
+    bsz = x.shape[0]
+    for i in range(bsz):
+      A = cosine_similarity(x[i])
+      A = torch.maximum(A, torch.tensor(0, dtype=torch.float32))
+      K = torch.sum(A, dim=1)
+      m = A.sum()
+      k = K @ K.T
+      W = k * A / m
+      self.W[i] = W
+  
+  def GetGraph(self):
+    return self.W
+
+
+
+
