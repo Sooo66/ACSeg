@@ -8,13 +8,14 @@ from utils import cosine_similarity
 class ViT():
   def __init__(self):
     self.processor = ViTImageProcessor.from_pretrained('facebook/dino-vits8')
-    self.model = ViTModel.from_pretrained('facebook/dino-vits8', , attn_implementation='eager')
+    self.model = ViTModel.from_pretrained('facebook/dino-vits8', attn_implementation='eager')
 
   def forward(self, x):
-    x = self.processor(x)
-    x = self.model(**x)
-    x = x[:, 1:, :]
-    return x
+    x = self.processor(x, return_tensors='pt')
+    x = self.model(**x, output_attentions=True)
+    last_hidden_state = x.last_hidden_state[:, 1:, :]
+    attn = x.attentions
+    return last_hidden_state, attn
   
 class MHA(BaseModel):
   def __init__(self, d_model, num_heads=6, dropout=0.):
@@ -103,6 +104,67 @@ class ACG(BaseModel):
       outputs = layer(outputs, representation)
     return outputs
   
+class PixelAssignmentForTrain():
+  def __init__(self, concepts, representation):
+    self.concepts = concepts
+    self.representation = representation
+
+  def GetDelta(self):
+    S = cosine_similarity(self.representation, self.concepts) # (B, tokens, prototypes)
+    S = torch.clamp(S, min=0)
+
+    S_expanded = S.unsqueeze(2)  # Shape: (B, tokens, 1, prototypes)
+    S_transposed = S.unsqueeze(1)  # Shape: (B, 1, tokens, prototypes)
+
+    # Element-wise multiplication and max reduction on the prototype dimension
+    delta = torch.max(S_expanded * S_transposed, dim=-1)[0]  # Shape: (B, tokens, tokens)
+    return delta
+  
+class AffinityGraph():
+  '''
+  @ param x: representation of the pixels with shape(Batch, tokens, d_model)
+  '''
+  def __init__(self, x):
+    self.W = torch.zeros(x.shape[0], x.shape[1], x.shape[1])
+    self.M = torch.zeros(x.shape[0])
+    bsz = x.shape[0]
+    for i in range(bsz):
+      A = cosine_similarity(x[i], x[i])
+      # A = torch.maximum(A, torch.tensor(0, dtype=torch.float32))
+      x = torch.clamp(x, min=0)
+      K = torch.sum(A, dim=1)
+      m = A.sum()
+      k = K @ K.T
+      W = k * A / m
+      self.W[i] = W
+      self.M[i] = m
+  
+  def GetGraph(self):
+    return self.W, self.M
+  
+class ACSeg(nn.Module):
+  def __init__(self, num_prototypes, num_layers, d_model, num_heads, d_ff, dropout):
+    super().__init__()
+    self.acg = ACG(num_prototypes, num_layers, d_model, num_heads, d_ff, dropout)
+
+  # x: (B, H, W, C) -> (B, tokens, d_model)
+  def forward(self, x):
+    concepts = self.acg(x)
+    affinity_graph = AffinityGraph(x)
+    W, M = affinity_graph.GetGraph()
+    pixel_assignment = PixelAssignmentForTrain(concepts, x)
+    delta = pixel_assignment.GetDelta()
+
+    return W, delta, M
+
+
+
+
+
+
+
+
+@Warning: The code under this line is not yet implemented
 class PixelAssignment():
   '''
   @ param concepts: prototypes with shape(batch, num_prototypes, d_model)
@@ -136,27 +198,7 @@ class PixelAssignment():
     return bsz_assignment  
 
   
-class AffinityGraph():
-  '''
-  @ param x: representation of the pixels with shape(Batch, tokens, d_model)
-  '''
-  def __init__(self, x):
-    self.W = torch.zeros(x.shape[0], x.shape[1], x.shape[1])
-    self.M = torch.zeros(x.shape[0])
-    bsz = x.shape[0]
-    for i in range(bsz):
-      A = cosine_similarity(x[i], x[i])
-      # A = torch.maximum(A, torch.tensor(0, dtype=torch.float32))
-      x = torch.clamp(x, min=0)
-      K = torch.sum(A, dim=1)
-      m = A.sum()
-      k = K @ K.T
-      W = k * A / m
-      self.W[i] = W
-      self.M[i] = m
-  
-  def GetGraph(self):
-    return self.W, self.M
+
   
 class Classifier():
   def __init__(self, attentions, assignement):

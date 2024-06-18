@@ -2,16 +2,16 @@ import numpy as np
 import torch
 from torchvision.utils import make_grid
 from base import BaseTrainer
-from utils import inf_loop, MetricTracker
+from utils import inf_loop, MetricTracker, make_mask
 
 
 class Trainer(BaseTrainer):
     """
     Trainer class
     """
-    def __init__(self, model, criterion, metric_ftns, optimizer, config, device,
+    def __init__(self, pre_model,  model, criterion, metric_ftns, optimizer, config, device,
                  data_loader, valid_data_loader=None, lr_scheduler=None, len_epoch=None):
-        super().__init__(model, criterion, metric_ftns, optimizer, config)
+        super().__init__(pre_model, model, criterion, metric_ftns, optimizer, config)
         self.config = config
         self.device = device
         self.data_loader = data_loader
@@ -43,22 +43,29 @@ class Trainer(BaseTrainer):
             data, target = data.to(self.device), target.to(self.device)
 
             self.optimizer.zero_grad()
-            output = self.model(data)
-            loss = self.criterion(output, target)
+            data, attn = self.pre_model.forward(data)
+            W, delta, M = self.model(data)
+            # loss = self.criterion(output, target)
+            loss = self.criterion(W.detach(), delta, M.detach())
             loss.backward()
             self.optimizer.step()
 
+
             self.writer.set_step((epoch - 1) * self.len_epoch + batch_idx)
             self.train_metrics.update('loss', loss.item())
-            for met in self.metric_ftns:
-                self.train_metrics.update(met.__name__, met(output, target))
+            # for met in self.metric_ftns:
+                # self.train_metrics.update(met.__name__, met(output, target))
 
             if batch_idx % self.log_step == 0:
                 self.logger.debug('Train Epoch: {} {} Loss: {:.6f}'.format(
                     epoch,
                     self._progress(batch_idx),
                     loss.item()))
-                self.writer.add_image('input', make_grid(data.cpu(), nrow=8, normalize=True))
+                # self.writer.add_image('input', make_grid(data.cpu(), nrow=8, normalize=True))
+                self.writer.add_image('input', make_grid(data.cpu(), nrow=8))
+                semantic_reult = make_mask(data, )
+                self.writer.add_image('output', make_grid(output.cpu(), nrow=8, normalize=True))
+
 
             if batch_idx == self.len_epoch:
                 break
