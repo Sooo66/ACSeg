@@ -8,7 +8,7 @@ from utils import cosine_similarity
 class ViT():
   def __init__(self):
     self.processor = ViTImageProcessor.from_pretrained('facebook/dino-vits8')
-    self.model = ViTModel.from_pretrained('facebook/dino-vits8')
+    self.model = ViTModel.from_pretrained('facebook/dino-vits8', , attn_implementation='eager')
 
   def forward(self, x):
     x = self.processor(x)
