@@ -103,6 +103,39 @@ class ACG(BaseModel):
       outputs = layer(outputs, representation)
     return outputs
   
+class PixelAssignment():
+  '''
+  @ param concepts: prototypes with shape(batch, num_prototypes, d_model)
+  @ param representation: representation of the pixels with shape(Batch, tokens, d_model)
+  '''
+  def __init__(self, concepts, representation):
+    self.concepts = concepts
+    self.representation = representation
+
+  def GetAssignment(self):
+    # S = cosine_similarity(self.representation, self.concepts)
+    # assignment = torch.argmax(S, dim=-1)
+    # return assignment
+    bsz = self.representation.shape[0]
+    num_concepts = self.concepts.shape[1]
+    bsz_assignment = {}
+    for i in range(bsz):
+      assigment = {}
+      S = cosine_similarity(self.representation[i], self.concepts[i])
+      S = torch.argmax(S, dim=-1)
+      for j in range(num_concepts):
+        asgn = []
+        for k in range(S.shape[0]):
+          if S[k] == j:
+            # asgn.append(self.representation[i][k])
+            # asgn[f"token_{k}"] = self.representation[i][k]
+            asgn.append((k, self.representation[i][k]))
+        assigment[f"concept_{j}"] = self.concepts[i][j]
+        assigment[f"pixels_{j}"] = asgn
+      bsz_assignment[f"batch_{i}"] = assigment
+    return bsz_assignment  
+
+  
 class AffinityGraph():
   '''
   @ param x: representation of the pixels with shape(Batch, tokens, d_model)
@@ -112,7 +145,7 @@ class AffinityGraph():
     self.M = torch.zeros(x.shape[0])
     bsz = x.shape[0]
     for i in range(bsz):
-      A = cosine_similarity(x[i])
+      A = cosine_similarity(x[i], x[i])
       # A = torch.maximum(A, torch.tensor(0, dtype=torch.float32))
       x = torch.clamp(x, min=0)
       K = torch.sum(A, dim=1)
@@ -124,6 +157,27 @@ class AffinityGraph():
   
   def GetGraph(self):
     return self.W, self.M
+  
+class Classifier():
+  def __init__(self, attentions, assignement):
+    self.attentions = attentions # (B, num_heads, tokens, tokens)
+    self.attentions = torch.min(self.attentions, dim=1) # (B, tokens, tokens)
+    self.assignment = assignement
+
+  def SplitBackgroud(self):
+    bsz = self.attentions.shape[0]
+    num_concepts = 5
+    for i in range(bsz):
+      assign = self.assignment[f"batch_{i}"]
+      attention = self.attentions[i]
+      forground_score = []
+      for j in range(num_concepts):
+        score = 0
+        for k in assign[f"pixels_{j}"]:
+          score += attention[k[0]].sum()
+        forground_score.append(score)
+
+
 
 
 

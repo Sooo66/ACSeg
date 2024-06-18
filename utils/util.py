@@ -4,7 +4,12 @@ import pandas as pd
 from pathlib import Path
 from itertools import repeat
 from collections import OrderedDict
+from torch.nn import functional as F
 
+def cosine_similarity(x, y):
+    x = F.normalize(x, p=2, dim=-1)
+    y = F.normalize(y, p=2, dim=-1)
+    return x @ y.transpose(-2, -1)
 
 def ensure_dir(dirname):
     dirname = Path(dirname)
