@@ -3,7 +3,18 @@ import torch.nn as nn
 import torch.nn.functional as F
 from base import BaseModel
 from transformers import ViTImageProcessor, ViTModel
+from transformers import CLIPProcessor, CLIPModel
 from utils import cosine_similarity
+from sklearn.cluster import KMeans
+import numpy as np
+
+# Pascal数据集的所有类别和对应数字
+PASCAL_CLASSES = [
+  "aeroplane", "bicycle", "bird", "boat", "bottle", "bus", "car", "cat", "chair",
+  "cow", "diningtable", "dog", "horse", "motorbike", "person", "pottedplant",
+  "sheep", "sofa", "train", "tvmonitor"
+]
+
 
 class ViT():
   def __init__(self):
@@ -11,12 +22,27 @@ class ViT():
     self.model = ViTModel.from_pretrained('facebook/dino-vits8', attn_implementation='eager')
 
   def forward(self, x):
-    x = self.processor(x, return_tensors='pt')
-    x = self.model(**x, output_attentions=True)
+    # x = self.processor(x, return_tensors='pt')
+    x = self.model(x, output_attentions=True)
     last_hidden_state = x.last_hidden_state[:, 1:, :]
     attn = x.attentions
     return last_hidden_state, attn
   
+class CLIP():
+  def __init__(self):
+    self.precessor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch16")
+    self.model = CLIPModel.from_pretrained("openai/clip-vit-base-patch16")
+    self.classes = []
+    for cls in PASCAL_CLASSES:
+      self.classes.append("a photo of a " + cls)
+
+  def forward(self, x):
+    inputs = self.processor(text=self.classes, images=x, return_tensors=True)
+    outputs = self.model(**inputs)
+    logits_per_image = outputs.logits_per_image
+    probs = logits_per_image.softmax(dim=1)
+    return probs
+
 class MHA(BaseModel):
   def __init__(self, d_model, num_heads=6, dropout=0.):
     super().__init__()
@@ -38,6 +64,7 @@ class MHA(BaseModel):
     
     if (q.dim() == 2):
       q = q.unsqueeze(0)
+      q = torch.stack([q] * k.shape[0], dim=0)
 
     bsz = k.shape[0]
 
@@ -50,10 +77,12 @@ class MHA(BaseModel):
     attn = self.dropout(attn)
 
     x = (attn @ v).transpose(1, 2).contiguous().view(bsz, -1, self.d_model) 
+
     q = q.transpose(1, 2).contiguous().view(bsz, -1, self.d_model)
+
     x = q + self.wo(x) # (B, 5, d_model)
     return x
-
+  
 class FeedForward(BaseModel):
   def __init__(self, d_model, d_ff, dropout=0.):
     super().__init__()
@@ -104,21 +133,23 @@ class ACG(BaseModel):
       outputs = layer(outputs, representation)
     return outputs
   
-class PixelAssignmentForTrain():
+class PixelAssignment():
   def __init__(self, concepts, representation):
     self.concepts = concepts
     self.representation = representation
 
-  def GetDelta(self):
+  def GetAssignmentAndDelta(self):
     S = cosine_similarity(self.representation, self.concepts) # (B, tokens, prototypes)
     S = torch.clamp(S, min=0)
+
+    assign = torch.argmax(S, dim=-1)
 
     S_expanded = S.unsqueeze(2)  # Shape: (B, tokens, 1, prototypes)
     S_transposed = S.unsqueeze(1)  # Shape: (B, 1, tokens, prototypes)
 
     # Element-wise multiplication and max reduction on the prototype dimension
     delta = torch.max(S_expanded * S_transposed, dim=-1)[0]  # Shape: (B, tokens, tokens)
-    return delta
+    return assign, delta
   
 class AffinityGraph():
   '''
@@ -152,72 +183,105 @@ class ACSeg(nn.Module):
     concepts = self.acg(x)
     affinity_graph = AffinityGraph(x)
     W, M = affinity_graph.GetGraph()
-    pixel_assignment = PixelAssignmentForTrain(concepts, x)
-    delta = pixel_assignment.GetDelta()
+    pixel_assignment = PixelAssignment(concepts, x)
+    assign, delta = pixel_assignment.GetDelta()
 
-    return W, delta, M
-
-
+    return W, delta, assign, M
 
 
 
+# class PixelAssignment():
+#   '''
+#   @ param concepts: prototypes with shape(batch, num_prototypes, d_model)
+#   @ param representation: representation of the pixels with shape(Batch, tokens, d_model)
+#   '''
+#   def __init__(self, concepts, representation):
+#     self.concepts = concepts
+#     self.representation = representation
 
+#   def GetAssignment(self):
+#     # S = cosine_similarity(self.representation, self.concepts)
+#     # assignment = torch.argmax(S, dim=-1)
+#     # return assignment
+#     bsz = self.representation.shape[0]
+#     num_concepts = self.concepts.shape[1]
+#     bsz_assignment = {}
+#     for i in range(bsz):
+#       assigment = {}
+#       S = cosine_similarity(self.representation[i], self.concepts[i])
+#       S = torch.argmax(S, dim=-1)
+#       for j in range(num_concepts):
+#         asgn = []
+#         for k in range(S.shape[0]):
+#           if S[k] == j:
+#             # asgn.append(self.representation[i][k])
+#             # asgn[f"token_{k}"] = self.representation[i][k]
+#             asgn.append((k, self.representation[i][k]))
+#         assigment[f"concept_{j}"] = self.concepts[i][j]
+#         assigment[f"pixels_{j}"] = asgn
+#       bsz_assignment[f"batch_{i}"] = assigment
+#     return bsz_assignment  
 
+def PixelAssignment(concepts, representation):
+  # concept: (B, num_prototypes, d_model)
+  # representation: (B, tokens, d_model)
 
-@Warning: The code under this line is not yet implemented
-class PixelAssignment():
-  '''
-  @ param concepts: prototypes with shape(batch, num_prototypes, d_model)
-  @ param representation: representation of the pixels with shape(Batch, tokens, d_model)
-  '''
-  def __init__(self, concepts, representation):
-    self.concepts = concepts
-    self.representation = representation
+  S = cosine_similarity(representation, concepts) # (B, tokens, prototypes)
 
-  def GetAssignment(self):
-    # S = cosine_similarity(self.representation, self.concepts)
-    # assignment = torch.argmax(S, dim=-1)
-    # return assignment
-    bsz = self.representation.shape[0]
-    num_concepts = self.concepts.shape[1]
-    bsz_assignment = {}
-    for i in range(bsz):
-      assigment = {}
-      S = cosine_similarity(self.representation[i], self.concepts[i])
-      S = torch.argmax(S, dim=-1)
-      for j in range(num_concepts):
-        asgn = []
-        for k in range(S.shape[0]):
-          if S[k] == j:
-            # asgn.append(self.representation[i][k])
-            # asgn[f"token_{k}"] = self.representation[i][k]
-            asgn.append((k, self.representation[i][k]))
-        assigment[f"concept_{j}"] = self.concepts[i][j]
-        assigment[f"pixels_{j}"] = asgn
-      bsz_assignment[f"batch_{i}"] = assigment
-    return bsz_assignment  
-
-  
 
   
 class Classifier():
-  def __init__(self, attentions, assignement):
-    self.attentions = attentions # (B, num_heads, tokens, tokens)
-    self.attentions = torch.min(self.attentions, dim=1) # (B, tokens, tokens)
-    self.assignment = assignement
+  # def __init__(self, attentions, assignement):
+  #   self.attentions = attentions # (B, num_heads, tokens, tokens)
+  #   self.attentions = torch.min(self.attentions, dim=1) # (B, tokens, tokens)
+  #   self.assignment = assignement
+  def __init__(self):
+    pass
 
-  def SplitBackgroud(self):
-    bsz = self.attentions.shape[0]
-    num_concepts = 5
+  def SplitBackgroud(assign, attn):
+    # assign: (B, tokens)
+    # attn: (B, head, tokens, tokens)
+    
+    attn, _ = torch.min(attn, dim=1)
+    attn = torch.sum(attn, dim=-1)
+    bsz = assign.shape[0]
+    res = []
     for i in range(bsz):
-      assign = self.assignment[f"batch_{i}"]
-      attention = self.attentions[i]
-      forground_score = []
-      for j in range(num_concepts):
-        score = 0
-        for k in assign[f"pixels_{j}"]:
-          score += attention[k[0]].sum()
-        forground_score.append(score)
+        score = [0] * 5
+        for j in range(assign.shape[1]):
+            cls = assign[i][j]
+            score[cls] += attn[i][j]
+        
+        score = [(i, s) for i, s in enumerate(score)]
+        score = sorted(score, key=lambda x: x[1])
+        mmax = 0
+        idx = 0
+        for k in range(4):
+            if mmax < score[k + 1][1] - score[k][1]:
+                mmax = score[k + 1][1] - score[k][1]
+                idx = score[k][0]
+
+        re = [0] * 5
+        for i in range(5):
+            if i <= idx:
+                re[score[i][0]] = 0
+            else:
+                re[score[i][0]] = 1
+        res.append(re)
+    return np.array(res)
+
+    
+
+    
+
+        
+
+
+
+
+
+
+
 
 
 

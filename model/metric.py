@@ -18,3 +18,14 @@ def top_k_acc(output, target, k=3):
         for i in range(k):
             correct += torch.sum(pred[:, i] == target).item()
     return correct / len(target)
+
+def mIoU(output, target):
+    with torch.no_grad():
+        pred = torch.argmax(output, dim=1)
+        assert pred.shape[0] == len(target)
+        iou = 0
+        for i in range(21):
+            intersection = ((pred == i) & (target == i)).sum().item()
+            union = ((pred == i) | (target == i)).sum().item()
+            iou += intersection / union
+    return iou / 21

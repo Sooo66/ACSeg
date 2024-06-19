@@ -10,6 +10,8 @@ from parse_config import ConfigParser
 from trainer import Trainer
 from utils import prepare_device
 
+from model.model import ViT
+
 
 # fix random seeds for reproducibility
 SEED = 123
@@ -23,7 +25,8 @@ def main(config):
 
     # setup data_loader instances
     data_loader = config.init_obj('data_loader', module_data)
-    valid_data_loader = data_loader.split_validation()
+    # valid_data_loader = data_loader.split_validation()
+    valid_data_loader = None
 
     # build model architecture, then print to console
     model = config.init_obj('arch', module_arch)
@@ -42,14 +45,15 @@ def main(config):
     # build optimizer, learning rate scheduler. delete every lines containing lr_scheduler for disabling scheduler
     trainable_params = filter(lambda p: p.requires_grad, model.parameters())
     optimizer = config.init_obj('optimizer', torch.optim, trainable_params)
-    lr_scheduler = config.init_obj('lr_scheduler', torch.optim.lr_scheduler, optimizer)
+    # lr_scheduler = config.init_obj('lr_scheduler', torch.optim.lr_scheduler, optimizer)
 
     trainer = Trainer(model, criterion, metrics, optimizer,
                       config=config,
                       device=device,
                       data_loader=data_loader,
                       valid_data_loader=valid_data_loader,
-                      lr_scheduler=lr_scheduler)
+                      len_epoch=2500)
+                    #   lr_scheduler=lr_scheduler)
 
     trainer.train()
 

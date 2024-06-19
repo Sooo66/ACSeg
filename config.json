@@ -1,32 +1,39 @@
 {
-    "name": "COCO_ACSeg",
+    "name": "Pascal_ACSeg",
     "n_gpu": 1,
 
     "arch": {
         "type": "ACSeg",
-        "args": {}
+        "args": {
+            "num_prototypes": 5,
+            "num_layers": 6,
+            "d_model": 384,
+            "num_heads": 6,
+            "d_ff": 1024,
+            "dropout": 0.0
+            }
     },
     "data_loader": {
-        "type": "COCODataLoader",
+        "type": "PascalVOCDataLoader",
         "args":{
-            "data_dir": "data/",
-            "batch_size": 128,
+            "data_path": "data/processed_dataset.pkl",
+            "batch_size": 32,
             "shuffle": true,
-            "validation_split": 0.1,
+            "validation_split": 0,
             "num_workers": 2
         }
     },
     "optimizer": {
-        "type": "Adam",
+        "type": "AdamW",
         "args":{
-            "lr": 0.001,
-            "weight_decay": 0,
+            "lr": 0.0001,
+            "weight_decay": 0.01,
             "amsgrad": true
         }
     },
-    "loss": "nll_loss",
+    "loss": "ModularityLoss",
     "metrics": [
-        "accuracy", "top_k_acc"
+        
     ],
     "lr_scheduler": {
         "type": "StepLR",
@@ -42,7 +49,7 @@
         "save_period": 1,
         "verbosity": 2,
         
-        "monitor": "min val_loss",
+        "monitor": "off",
         "early_stop": 10,
 
         "tensorboard": true
