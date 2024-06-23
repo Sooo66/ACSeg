@@ -1,9 +1,8 @@
 from torch.utils.data.dataloader import default_collate
-from torch.utils.data import DataLoader, Dataset
-from torchvision import datasets, transforms
+from torch.utils.data import  Dataset
 from base import BaseDataLoader
 import pickle
-from model.model import ViT
+import torch
 
 # class MinistDataset(BaseDataLoader):
 #     """
@@ -28,10 +27,24 @@ class PascalVOCDataset(Dataset):
     return len(self.data)
   
   def __getitem__(self, idx):
-    return self.data[idx]
+    # return self.data[idx]
+    (data, target) = self.data[idx]
+    image, representation, attn = data
+    mt, vt = target
+    image = torch.from_numpy(image).float()
+    image = torch.permute(image, (2, 0, 1)) # (3, 224, 224)
+    representation = torch.from_numpy(representation).float()
+    attn = torch.from_numpy(attn).float()
+    # target = torch.from_numpy(target).to(torch.float32)
+
+    mt = torch.from_numpy(mt)
+    mt = mt.to(dtype=torch.uint8)
+    vt = torch.from_numpy(vt).float()
+
+    return (image, representation, attn), (mt, vt)
   
-class PascalVOCDataLoader(DataLoader):
+class PascalVOCDataLoader(BaseDataLoader):
   def __init__(self, data_path, batch_size, shuffle=True, validation_split=0.1, num_workers=1):
     self.data_path = data_path
     self.dataset = PascalVOCDataset(self.data_path)
-    super().__init__(self.dataset, batch_size, shuffle, collate_fn=default_collate, num_workers=num_workers)
+    super().__init__(self.dataset, batch_size, shuffle, validation_split=validation_split, collate_fn=default_collate, num_workers=num_workers)

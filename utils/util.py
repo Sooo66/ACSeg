@@ -5,6 +5,115 @@ from pathlib import Path
 from itertools import repeat
 from collections import OrderedDict
 from torch.nn import functional as F
+import numpy as np
+
+# colors = [[  0   0   0],
+#         [128   0   0],
+#         [  0 128   0],
+#         [128 128   0],
+#         [  0   0 128],
+#         [128   0 128],
+#         [  0 128 128],
+#         [128 128 128],
+#         [ 64   0   0],
+#         [192   0   0],
+#         [ 64 128   0],
+#         [192 128   0],
+#         [ 64   0 128],
+#         [192   0 128],
+#         [ 64 128 128],
+#         [192 128 128],
+#         [  0  64   0],
+#         [128  64   0],
+#         [  0 192   0],
+#         [128 192   0],
+#         [  0  64 128]]
+
+colors = np.array([[0, 0, 0], 
+                   [128, 0, 0],
+                   [0, 128, 0], 
+                   [128, 128, 0], 
+                   [0, 0, 128], 
+                   [128, 0, 128], 
+                   [0, 128, 128], 
+                   [128, 128, 128],
+                   [64, 0, 0], 
+                   [192, 0, 0], 
+                   [64, 128, 0], 
+                   [192, 128, 0], 
+                   [64, 0, 128], 
+                   [192, 0, 128], 
+                   [64, 128, 128], 
+                   [192, 128, 128], 
+                   [0, 64, 0], 
+                   [128, 64, 0], 
+                   [0, 192, 0], 
+                   [128, 192, 0], 
+                   [0, 64, 128]], dtype=np.uint8)
+
+def Visualize(output):
+    # output: [B, 224, 224]
+    output = output.detach().cpu().numpy()
+    
+    # 创建一个空的彩色输出数组
+    B, H, W = output.shape
+    color_output = np.zeros((B, H, W, 3), dtype=np.uint8)
+    
+    # 将 output 作为颜色索引，使用 NumPy 的高级索引功能进行映射
+    valid_mask = output < len(colors)
+    color_output[valid_mask] = colors[output[valid_mask]]
+    
+    # 对于超出 colors 范围的索引，设置为白色
+    invalid_mask = ~valid_mask
+
+    # Debug
+    # print(color_output[invalid_mask])
+
+    color_output[invalid_mask] = [255, 255, 255]
+
+    return color_output
+
+color_map = {
+    0: (0, 0, 0, 0.7),  # 黑色
+    1: (1.0, 0, 0, 0.5),    # 半透明红色
+    2: (0, 1.0, 0, 0.5),    # 半透明绿色
+    3: (0, 0, 1.0, 0.5),    # 半透明蓝色
+    4: (1.0, 1.0, 0, 0.5),  # 半透明黄色
+    5: (1.0, 0, 1.0, 0.5)   # 半透明紫色
+}
+
+def apply_mask_with_transparency(image_tensor, mask_tensor, color_map=color_map):
+    # 确保image_tensor 和 mask_tensor 是正确的形状
+    # assert image_tensor.shape[0] == 3, "Image tensor should have 3 channels (C, H, W)"
+    # assert len(mask_tensor.shape) == 2, "Mask tensor should have 2 dimensions (H, W)"
+    # assert image_tensor.shape[1:] == mask_tensor.shape, "Image and mask must have the same height and width"
+
+    # print("Image tensor shape:", image_tensor.shape)
+    # print("Mask tensor shape:", mask_tensor.shape)
+
+    # 将image_tensor 转换为RGBA格式 (增加alpha通道)
+    alpha_tensor = torch.ones((1, *mask_tensor.shape), dtype=torch.float32)
+    image_rgba_tensor = torch.cat([image_tensor, alpha_tensor], dim=0)
+
+    # print("Image RGBA tensor shape:", image_rgba_tensor.shape)
+
+    # 遍历mask并应用颜色
+    overlay_tensor = torch.zeros_like(image_rgba_tensor)
+    for mask_value, color in color_map.items():
+        mask_indices = mask_tensor == mask_value
+        for i in range(6):
+            overlay_tensor[i][mask_indices] = color[i]
+
+    # print("Overlay tensor shape:", overlay_tensor.shape)
+
+    # 合成图像
+    combined_tensor = image_rgba_tensor * (1 - overlay_tensor[3:]) + overlay_tensor * overlay_tensor[3:]
+
+    # print("Combined tensor shape:", combined_tensor.shape)
+
+    return combined_tensor
+
+
 
 def cosine_similarity(x, y):
     x = F.normalize(x, p=2, dim=-1)

@@ -14,6 +14,6 @@ import torch
 
 def ModularityLoss(x, delta, m):
     loss = torch.sum(delta * x, dim=(1, 2))
-    loss = loss * (-1 / (2 * m))
+    loss = loss * (-1 / m)
 
     return loss.sum()

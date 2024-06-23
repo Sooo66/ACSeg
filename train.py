@@ -10,23 +10,24 @@ from parse_config import ConfigParser
 from trainer import Trainer
 from utils import prepare_device
 
-from model.model import ViT
-
-
 # fix random seeds for reproducibility
-SEED = 123
+SEED = 3407
 torch.manual_seed(SEED)
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 np.random.seed(SEED)
+
+import warnings
+
+warnings.filterwarnings("ignore")
 
 def main(config):
     logger = config.get_logger('train')
 
     # setup data_loader instances
     data_loader = config.init_obj('data_loader', module_data)
-    # valid_data_loader = data_loader.split_validation()
-    valid_data_loader = None
+    valid_data_loader = data_loader.split_validation()
+    # valid_data_loader = None
 
     # build model architecture, then print to console
     model = config.init_obj('arch', module_arch)
@@ -34,6 +35,7 @@ def main(config):
 
     # prepare for (multi-device) GPU training
     device, device_ids = prepare_device(config['n_gpu'])
+    logger.info(f"device: {device} (n_gpu = {config['n_gpu']})")
     model = model.to(device)
     if len(device_ids) > 1:
         model = torch.nn.DataParallel(model, device_ids=device_ids)
@@ -51,8 +53,8 @@ def main(config):
                       config=config,
                       device=device,
                       data_loader=data_loader,
-                      valid_data_loader=valid_data_loader,
-                      len_epoch=2500)
+                      valid_data_loader=valid_data_loader)
+                    #   len_epoch=250)
                     #   lr_scheduler=lr_scheduler)
 
     trainer.train()

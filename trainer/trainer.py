@@ -2,10 +2,9 @@ import numpy as np
 import torch
 from torchvision.utils import make_grid
 from base import BaseTrainer
-from utils import inf_loop, MetricTracker
-from model.model import ViT, CLIP
+from utils import inf_loop, MetricTracker, Visualize, apply_mask_with_transparency
 from model.model import Classifier
-
+from tqdm import tqdm
 
 class Trainer(BaseTrainer):
     """
@@ -14,10 +13,6 @@ class Trainer(BaseTrainer):
     def __init__(self, model, criterion, metric_ftns, optimizer, config, device,
                  data_loader, valid_data_loader=None, lr_scheduler=None, len_epoch=None):
         super().__init__(model, criterion, metric_ftns, optimizer, config)
-
-        # pre-trained model
-        self.ViT = ViT()
-        self.CLIP = CLIP()
         
         self.Classifier = Classifier()
 
@@ -48,56 +43,82 @@ class Trainer(BaseTrainer):
         """
         self.model.train()
         self.train_metrics.reset()
-        for batch_idx, (data, target) in enumerate(self.data_loader):
-            # data, target = data.to(self.device), target.to(self.device)
+
+        pbar = tqdm(enumerate(self.data_loader), total=self.len_epoch, desc=f'(Train)Epoch {epoch}', leave=True, ncols=100)
+        key, value = [], []
+
+        # for batch_idx, (data, target) in enumerate(self.data_loader):
+        for batch_idx, (data, target) in pbar:
             image, representation, attn = data
-            representation, attn, target = representation.to(self.device), attn.to(self.device), target.to(self.device)
-            # print(representation.shape, attn.shape, target.shape)
+            # image -> float32
+            # image = image.to(torch.float32)
+            representation, attn = representation.to(self.device), attn.to(self.device)
+            mt, vt = target
+            mt, vt = mt.to(self.device), vt.to(self.device)
+            mt[mt == 255] = 0
+            # target: PIL
 
             self.optimizer.zero_grad()
-            W, delta, assign, M = self.model(representation) # assign(B, token): 每个token属于的concept
-            assign = assign.detach().to(self.device)
+            concepts, W, delta, S, M = self.model(representation) # S: (B, tokens, concepts)
             loss = self.criterion(W.detach().to(self.device), delta, M.detach().to(self.device))
             loss.backward()
             self.optimizer.step()
 
-            # Split background and foreground
-            split_res = self.Classifier.SplitBackgroud(assign, attn) # (B, concepts) == (B, 5)
-            output = np.zeros_like(image.shape)
-            bsz = split_res.shape[0]
-            for i in range(bsz):
-                foreground = [idx for idx, val in enumerate(split_res[i]) if val == 1]
-                max_concept = max(foreground)
-                tokens = [idx for idx, val in enumerate(assign[i]) if val in foreground]
-                o = torch.zeros(16, 16)
-                for token in tokens:
-                    o[tokens] = assign[i][token]
-                # linear interpolation
-                o = torch.nn.functional.interpolate(o, size=(224, 224), mode='bilinear')
-                mask = []
-                for i in range(max_concept):
-                    i_mask = torch.where(o > i and o <= i + 1, torch.tensor(1), torch.tensor(0))
-                    mask.append(i_mask)
-                output[i] = o
-
-            # CLIP for zero_shot
-
+            assign = torch.argmax(S, dim=2) # (B, tokens)
+            foreground = self.Classifier.SplitBackgroud(assign, attn) # (B, concepts) == (B, 5)
+            mask = self.Classifier.GetMask(S, foreground) # (B, 224, 224)
+            k, v = self.Classifier.CreateKNN(mask, mt, concepts)
+            key += k
+            value += v
 
             self.writer.set_step((epoch - 1) * self.len_epoch + batch_idx)
-            self.train_metrics.update('loss', loss.item())
-            for met in self.metric_ftns:
-                self.train_metrics.update(met.__name__, met(output, target))
+            self.train_metrics.update('loss', loss.detach().item())
+
+            # self.logger.debug('Train Epoch: {} {} Loss: {:.6f}'.format(
+            #         epoch,
+            #         self._progress(batch_idx),
+            #         loss.detach().item()))
+            # for met in self.metric_ftns:
+            #     self.train_metrics.update(met.__name__, met(output, target))
+            pbar.update(1)
 
             if batch_idx % self.log_step == 0:
-                self.logger.debug('Train Epoch: {} {} Loss: {:.6f}'.format(
-                    epoch,
-                    self._progress(batch_idx),
-                    loss.item()))
-                self.writer.add_image('input', make_grid(image.cpu(), nrow=8, normalize=True))
-                self.writer.add_image('output', make_grid(output.cpu(), nrow=8, normalize=True))
-                # self.writer.add_image('input', make_grid(data.cpu(), nrow=8))
-                # semantic_reult = make_mask(data, )
-                # self.writer.add_image('output', make_grid(output.cpu(), nrow=8, normalize=True))
+                # Split background and foreground
+                assign = torch.argmax(S, dim=2) # (B, tokens)
+                foreground = self.Classifier.SplitBackgroud(assign, attn) # (B, concepts) == (B, 5)
+                mask = self.Classifier.GetMask(S, foreground) # (B, 224, 224)
+                bbxs = self.Classifier.GetBox(mask, image) # (B, [])
+
+                # for met in self.metric_ftns:
+                    # self.train_metrics.update(met.__name__, met(output, mt))
+
+                bbxs_img0 = [] # 每个bsz只扣一张看效果
+                bbxs_img1 = []
+                for i in range(len(bbxs)): # bsz
+                    bbx = bbxs[i]
+                    if len(bbx) > 1:
+                        bbxs_img0.append(torch.from_numpy(bbx[0][0]).float())
+                        bbxs_img1.append(torch.from_numpy(bbx[1][0]).float())
+                    else :
+                        bbxs_img0.append(torch.zeros(224, 224, 3))
+                        bbxs_img1.append(torch.zeros(224, 224, 3))
+                bbxs_img0 = torch.stack(bbxs_img0)
+                bbxs_img1 = torch.stack(bbxs_img1)
+
+                bsz = mask.shape[0]
+                cpts = []
+                for i in range(bsz):
+                    mk = mask[i].clone()
+                    im = apply_mask_with_transparency(image[i], mk)
+                    cpts.append(im)
+                cpts = torch.stack(cpts, dim=0)
+
+                self.writer.add_image('input', make_grid(image.detach().cpu(), nrow=8, normalize=True))
+                self.writer.add_image('concepts', make_grid(cpts.detach().cpu(), nrow=8))
+
+                self.writer.add_image('bbx0', make_grid(torch.permute(bbxs_img0, (0, 3, 1, 2)).detach().cpu(), nrow=8))
+                self.writer.add_image('bbx1', make_grid(torch.permute(bbxs_img1, (0, 3, 1, 2)).detach().cpu(), nrow=8))
+                self.writer.add_image('target', make_grid(vt.detach().cpu(), nrow=8)) # target(B, 224, 224)
 
 
             if batch_idx == self.len_epoch:
@@ -105,14 +126,16 @@ class Trainer(BaseTrainer):
         log = self.train_metrics.result()
 
         if self.do_validation:
-            val_log = self._valid_epoch(epoch)
+            key = torch.stack(key, dim=0)
+            value = torch.stack(value, dim=0)
+            val_log = self._valid_epoch(epoch, key, value)
             log.update(**{'val_'+k : v for k, v in val_log.items()})
 
         if self.lr_scheduler is not None:
             self.lr_scheduler.step()
         return log
 
-    def _valid_epoch(self, epoch):
+    def _valid_epoch(self, epoch, key, value):
         """
         Validate after training an epoch
 
@@ -121,18 +144,39 @@ class Trainer(BaseTrainer):
         """
         self.model.eval()
         self.valid_metrics.reset()
+        vpbar = tqdm(enumerate(self.valid_data_loader), total=len(self.valid_data_loader), desc=f'(Valid)Epoch {epoch}', leave=True, ncols=100)
         with torch.no_grad():
-            for batch_idx, (data, target) in enumerate(self.valid_data_loader):
-                data, target = data.to(self.device), target.to(self.device)
+            for batch_idx, (data, target) in vpbar:
+                # data, target = data.to(self.device), target.to(self.device)
 
-                output = self.model(data)
-                loss = self.criterion(output, target)
+                image, representation, attn = data
+                # image -> float32
+                # image = image.to(torch.float32)
+                representation, attn = representation.to(self.device), attn.to(self.device)
+                mt, vt = target
+                mt, vt = mt.to(self.device), vt.to(self.device)
+                mt[mt == 255] = 0
+
+                # --------
+                self.optimizer.zero_grad()
+                concepts, W, delta, S, M = self.model(representation) # S: (B, tokens, concepts)
+                loss = self.criterion(W.detach().to(self.device), delta, M.detach().to(self.device))
+
+                assign = torch.argmax(S, dim=-1) # (B, tokens)
+                foreground = self.Classifier.SplitBackgroud(assign, attn) # (B, concepts) == (B, 5)
+                mask = self.Classifier.GetMask(S, foreground) # (B, 224, 224)
+                output = self.Classifier.KnnRetrivel(concepts, key, value, mask)
+                output = torch.stack(output, dim=0)
+                # --------
 
                 self.writer.set_step((epoch - 1) * len(self.valid_data_loader) + batch_idx, 'valid')
-                self.valid_metrics.update('loss', loss.item())
+                self.valid_metrics.update('loss', loss.detach().item())
                 for met in self.metric_ftns:
-                    self.valid_metrics.update(met.__name__, met(output, target))
-                self.writer.add_image('input', make_grid(data.cpu(), nrow=8, normalize=True))
+                    self.valid_metrics.update(met.__name__, met(output, mt))
+                self.writer.add_image('valid_input', make_grid(image.detach().cpu(), nrow=8, normalize=True))
+                o = torch.from_numpy(Visualize(output)).float()
+                self.writer.add_image('valid_output', make_grid(torch.permute(o, (0, 3, 1, 2)).detach().cpu(), nrow=8))
+                vpbar.update(1)
 
         # add histogram of model parameters to the tensorboard
         for name, p in self.model.named_parameters():
